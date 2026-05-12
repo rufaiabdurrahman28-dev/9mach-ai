@@ -65,11 +65,11 @@ export async function GET(req: NextRequest) {
       return NextResponse.json({ messages: [] });
     }
 
-    // Map to camelCase
+    // Map to camelCase and normalize role names
     const mapped = (messages || []).map((m: any) => ({
       id: m.id,
       workspaceId: m.workspace_id,
-      role: m.role,
+      role: m.role === 'assistant' ? 'ai' : m.role,
       content: m.content,
       createdAt: m.created_at,
     }));

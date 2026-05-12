@@ -10,7 +10,6 @@ async function getAuthUser() {
   const { data: { user }, error } = await supabaseAdmin.auth.getUser(accessToken);
   if (error || !user) return null;
 
-  // Check approval from profiles table
   let isApproved = false;
   const { data: profile } = await supabaseAdmin
     .from('profiles')
@@ -19,22 +18,18 @@ async function getAuthUser() {
     .single();
 
   if (profile) {
-    if (profile.is_approved === true) {
-      isApproved = true;
-    } else if (profile.role === 'admin' || profile.role === 'manager') {
-      isApproved = true;
-    }
+    if (profile.is_approved === true) isApproved = true;
+    else if (profile.role === 'admin' || profile.role === 'manager') isApproved = true;
   }
 
   return { id: user.id, email: user.email, isApproved };
 }
 
+// GET - List workspaces for the current user
 export async function GET() {
   try {
     const user = await getAuthUser();
-    if (!user) {
-      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
-    }
+    if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
 
     const { data: workspaces, error } = await supabaseAdmin
       .from('workspaces')
@@ -47,39 +42,33 @@ export async function GET() {
       return NextResponse.json({ workspaces: [] });
     }
 
-    // Map to camelCase
     const mapped = (workspaces || []).map((w: any) => ({
       id: w.id,
-      userId: w.user_id,
       name: w.name,
       createdAt: w.created_at,
     }));
 
     return NextResponse.json({ workspaces: mapped });
   } catch (error: any) {
-    console.error('List workspaces error:', error);
+    console.error('Get workspaces error:', error);
     return NextResponse.json({ error: 'Failed to fetch workspaces' }, { status: 500 });
   }
 }
 
+// POST - Create a new workspace
 export async function POST(req: NextRequest) {
   try {
     const user = await getAuthUser();
-    if (!user) {
-      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
-    }
-
-    if (!user.isApproved) {
-      return NextResponse.json({ error: 'Not approved' }, { status: 403 });
-    }
+    if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
 
     const { name } = await req.json();
+    if (!name) return NextResponse.json({ error: 'Name is required' }, { status: 400 });
 
     const { data: workspace, error } = await supabaseAdmin
       .from('workspaces')
       .insert({
         user_id: user.id,
-        name: name || 'Untitled Workspace',
+        name,
       })
       .select()
       .single();
@@ -92,7 +81,6 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({
       workspace: {
         id: workspace.id,
-        userId: workspace.user_id,
         name: workspace.name,
         createdAt: workspace.created_at,
       },

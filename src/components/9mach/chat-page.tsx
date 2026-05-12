@@ -99,8 +99,7 @@ export function ChatPage({ user, onLogout }: ChatPageProps) {
   // Update preview URL when workspace changes
   useEffect(() => {
     if (activeWorkspaceId && previewOpen) {
-      // Use the terminal service for preview via Caddy gateway
-      setPreviewUrl(`/api/preview/${activeWorkspaceId}/?XTransformPort=3003`);
+      setPreviewUrl(`/api/preview/${activeWorkspaceId}/`);
     } else {
       setPreviewUrl('');
     }
@@ -138,7 +137,7 @@ export function ChatPage({ user, onLogout }: ChatPageProps) {
   const refreshPreview = useCallback(() => {
     if (activeWorkspaceId && previewOpen) {
       // Force iframe refresh by adding timestamp
-      setPreviewUrl(`/api/preview/${activeWorkspaceId}/?XTransformPort=3003&_t=${Date.now()}`);
+      setPreviewUrl(`/api/preview/${activeWorkspaceId}/?_t=${Date.now()}`);
     }
   }, [activeWorkspaceId, previewOpen]);
 
