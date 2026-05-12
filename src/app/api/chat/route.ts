@@ -5,39 +5,17 @@ import ZAI from 'z-ai-web-dev-sdk';
 
 const TERMINAL_SERVICE_URL = process.env.TERMINAL_SERVICE_URL || 'http://localhost:3003';
 
-const SYSTEM_PROMPT = `You are 9mach AI, an expert full-stack developer who works through a terminal. You build REAL applications by creating files and executing commands.
+const SYSTEM_PROMPT = `You are 9mach AI, an expert full-stack developer. You build REAL applications by creating files on disk.
 
-When the user asks you to build something, you MUST respond using these special command formats:
+CRITICAL: When you build something, you MUST use this EXACT format to create files:
 
-1. **Create a file** (most common):
 :::file:path/to/file.ext
-<file contents here>
+complete file contents here
 :::endfile
 
-2. **Execute a terminal command**:
-:::exec:command here
+For example, to build a landing page:
 
-3. **Create a directory**:
-:::mkdir:path/to/directory
-
-4. **Regular text** (explanations, questions):
-Just type normally outside of command blocks.
-
-**IMPORTANT RULES:**
-- When building a web app, ALWAYS create a complete \`index.html\` file that works standalone
-- For React apps, create a single HTML file that loads React from CDN (https://unpkg.com/react@18/umd/react.production.min.js and https://unpkg.com/react-dom@18/umd/react-dom.production.min.js) and uses Babel standalone for JSX
-- For styling, include Tailwind CSS via CDN (<script src="https://cdn.tailwindcss.com"></script>)
-- Make ALL code production-quality with modern, responsive design
-- Always explain what you're doing before and after commands
-- Create proper project structures (src/, components/, etc.) when building complex apps
-- Keep responses concise but thorough
-- If the user asks a question (not to build something), just answer normally without commands
-- When building UIs, make them visually stunning with proper colors, spacing, and typography
-- ALWAYS include proper meta viewport tag for responsive design
-
-**Example response for "Build me a login page":**
-
-I'll create a modern login page for you with Tailwind CSS styling.
+I'll build a modern landing page for you!
 
 :::file:index.html
 <!DOCTYPE html>
@@ -45,16 +23,24 @@ I'll create a modern login page for you with Tailwind CSS styling.
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Login</title>
+    <title>My Page</title>
     <script src="https://cdn.tailwindcss.com"></script>
 </head>
-<body class="bg-gray-50 min-h-screen flex items-center justify-center">
-    <!-- Login form here -->
+<body class="bg-white">
+    <h1>Hello World</h1>
 </body>
 </html>
 :::endfile
 
-Login page created! The preview should now show a modern login form with email and password fields.`;
+Your landing page is ready!
+
+RULES:
+- ALWAYS use :::file: and :::endfile to create files - NEVER use markdown code blocks
+- ALWAYS include <script src="https://cdn.tailwindcss.com"></script> for styling
+- ALWAYS include proper meta viewport tag
+- ALWAYS create complete, working HTML files
+- If asked a question (not to build), answer normally without :::file: commands
+- Keep explanations brief and focused`;
 
 interface TerminalResult {
   success: boolean;
@@ -76,13 +62,20 @@ async function callTerminalService(endpoint: string, body: any): Promise<Termina
 }
 
 async function processAiResponse(aiResponse: string, workspaceId: string): Promise<string> {
-  const lines = aiResponse.split('\n');
   let output = '';
   let inFile = false;
   let filePath = '';
   let fileContent = '';
+  let inCodeBlock = false;
+  let codeBlockLang = '';
+  let codeBlockContent = '';
 
-  for (const line of lines) {
+  const lines = aiResponse.split('\n');
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+
+    // Handle :::file: format
     if (line.startsWith(':::file:')) {
       inFile = true;
       filePath = line.replace(':::file:', '').trim();
@@ -98,13 +91,9 @@ async function processAiResponse(aiResponse: string, workspaceId: string): Promi
         filePath,
         content: fileContent,
       });
-
-      if (result.success) {
-        output += `\x1b[32mFile created: ${filePath}\x1b[0m\n`;
-      } else {
-        output += `\x1b[31mFailed to create file: ${result.output}\x1b[0m\n`;
-      }
-
+      output += result.success
+        ? `\x1b[32mFile created: ${filePath}\x1b[0m\n`
+        : `\x1b[31mFailed: ${result.output}\x1b[0m\n`;
       filePath = '';
       fileContent = '';
       continue;
@@ -115,58 +104,106 @@ async function processAiResponse(aiResponse: string, workspaceId: string): Promi
       continue;
     }
 
-    if (line.startsWith(':::exec:')) {
-      const command = line.replace(':::exec:', '').trim();
-      output += `\n\x1b[33m$ ${command}\x1b[0m\n`;
-
-      const result = await callTerminalService('/api/execute', {
-        workspaceId,
-        command,
-      });
-
-      if (result.output) {
-        output += `${result.output}\n`;
-      }
-      if (result.success) {
-        output += '\x1b[32mCommand completed\x1b[0m\n';
+    // Handle markdown code blocks (```html, ```css, ```file:path, etc.) as fallback
+    if (line.trim().startsWith('```') && !inCodeBlock && line.trim().length > 3) {
+      inCodeBlock = true;
+      const langPart = line.trim().replace('```', '').trim();
+      codeBlockLang = langPart;
+      codeBlockContent = '';
+      // Extract filename from ```file:path format
+      if (langPart.startsWith('file:')) {
+        filePath = langPart.replace('file:', '').trim();
       } else {
-        output += '\x1b[31mCommand failed\x1b[0m\n';
+        filePath = '';
       }
       continue;
     }
 
+    if (line.trim() === '```' && inCodeBlock) {
+      inCodeBlock = false;
+      // Determine file path
+      let detectedPath = filePath || 'index.html';
+      if (!filePath) {
+        if (codeBlockLang === 'css') detectedPath = 'style.css';
+        else if (codeBlockLang === 'javascript' || codeBlockLang === 'js') detectedPath = 'script.js';
+        else if (codeBlockContent.includes('<!DOCTYPE html') || codeBlockContent.includes('<html')) detectedPath = 'index.html';
+      }
+
+      // Only create file if it looks like actual code
+      if (codeBlockContent.trim().length > 50) {
+        output += `\n\x1b[33mCreating file: ${detectedPath}\x1b[0m\n`;
+        const result = await callTerminalService('/api/write-file', {
+          workspaceId,
+          filePath: detectedPath,
+          content: codeBlockContent,
+        });
+        output += result.success
+          ? `\x1b[32mFile created: ${detectedPath}\x1b[0m\n`
+          : `\x1b[31mFailed: ${result.output}\x1b[0m\n`;
+      }
+      codeBlockContent = '';
+      codeBlockLang = '';
+      continue;
+    }
+
+    if (inCodeBlock) {
+      codeBlockContent += (codeBlockContent ? '\n' : '') + line;
+      continue;
+    }
+
+    // Handle :::exec: commands
+    if (line.startsWith(':::exec:')) {
+      const command = line.replace(':::exec:', '').trim();
+      output += `\n\x1b[33m$ ${command}\x1b[0m\n`;
+      const result = await callTerminalService('/api/execute', {
+        workspaceId,
+        command,
+      });
+      if (result.output) output += `${result.output}\n`;
+      output += result.success ? '\x1b[32mCommand completed\x1b[0m\n' : '\x1b[31mCommand failed\x1b[0m\n';
+      continue;
+    }
+
+    // Handle :::mkdir: commands
     if (line.startsWith(':::mkdir:')) {
       const dirPath = line.replace(':::mkdir:', '').trim();
       output += `\n\x1b[33mCreating directory: ${dirPath}\x1b[0m\n`;
-
       const result = await callTerminalService('/api/create-dir', {
         workspaceId,
         dirPath,
       });
-
-      if (result.success) {
-        output += '\x1b[32mDirectory created\x1b[0m\n';
-      } else {
-        output += '\x1b[31mFailed to create directory\x1b[0m\n';
-      }
+      output += result.success ? '\x1b[32mDirectory created\x1b[0m\n' : '\x1b[31mFailed\x1b[0m\n';
       continue;
     }
 
     output += line + '\n';
   }
 
-  if (inFile && filePath) {
+  // Handle unclosed :::file: block
+  if (inFile && filePath && fileContent.trim()) {
     const result = await callTerminalService('/api/write-file', {
       workspaceId,
       filePath,
       content: fileContent,
     });
+    output += result.success
+      ? `\n\x1b[32mFile created: ${filePath}\x1b[0m\n`
+      : `\n\x1b[31mFailed: ${result.output}\x1b[0m\n`;
+  }
 
-    if (result.success) {
-      output += `\n\x1b[32mFile created: ${filePath}\x1b[0m\n`;
-    } else {
-      output += `\n\x1b[31mFailed to create file: ${result.output}\x1b[0m\n`;
-    }
+  // Handle unclosed code block
+  if (inCodeBlock && codeBlockContent.trim().length > 50) {
+    let detectedPath = 'index.html';
+    if (codeBlockContent.includes('<!DOCTYPE html') || codeBlockContent.includes('<html')) detectedPath = 'index.html';
+    output += `\n\x1b[33mCreating file: ${detectedPath}\x1b[0m\n`;
+    const result = await callTerminalService('/api/write-file', {
+      workspaceId,
+      filePath: detectedPath,
+      content: codeBlockContent,
+    });
+    output += result.success
+      ? `\x1b[32mFile created: ${detectedPath}\x1b[0m\n`
+      : `\x1b[31mFailed: ${result.output}\x1b[0m\n`;
   }
 
   return output;
@@ -188,11 +225,8 @@ async function getAuthUser() {
     .single();
 
   if (profile) {
-    if (profile.is_approved === true) {
-      isApproved = true;
-    } else if (profile.role === 'admin' || profile.role === 'manager') {
-      isApproved = true;
-    }
+    if (profile.is_approved === true) isApproved = true;
+    else if (profile.role === 'admin' || profile.role === 'manager') isApproved = true;
   }
 
   return { id: user.id, email: user.email, isApproved };
@@ -201,19 +235,11 @@ async function getAuthUser() {
 export async function POST(req: NextRequest) {
   try {
     const user = await getAuthUser();
-    if (!user) {
-      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
-    }
-
-    if (!user.isApproved) {
-      return NextResponse.json({ error: 'Not approved' }, { status: 403 });
-    }
+    if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    if (!user.isApproved) return NextResponse.json({ error: 'Not approved' }, { status: 403 });
 
     const { workspaceId, content } = await req.json();
-
-    if (!workspaceId || !content) {
-      return NextResponse.json({ error: 'workspaceId and content are required' }, { status: 400 });
-    }
+    if (!workspaceId || !content) return NextResponse.json({ error: 'workspaceId and content are required' }, { status: 400 });
 
     // Verify workspace belongs to user
     const { data: workspace } = await supabaseAdmin
@@ -222,10 +248,7 @@ export async function POST(req: NextRequest) {
       .eq('id', workspaceId)
       .eq('user_id', user.id)
       .single();
-
-    if (!workspace) {
-      return NextResponse.json({ error: 'Workspace not found' }, { status: 404 });
-    }
+    if (!workspace) return NextResponse.json({ error: 'Workspace not found' }, { status: 404 });
 
     // Save user message
     await supabaseAdmin.from('messages').insert({
@@ -234,73 +257,147 @@ export async function POST(req: NextRequest) {
       content,
     });
 
-    // Fetch last 30 messages for context
+    // Fetch last 20 messages for context
     const { data: history } = await supabaseAdmin
       .from('messages')
       .select('*')
       .eq('workspace_id', workspaceId)
       .order('created_at', { ascending: false })
-      .limit(30);
+      .limit(20);
 
     const messages = (history || [])
       .reverse()
       .map((m: any) => ({
-        role: m.role === 'ai' ? 'assistant' : 'user',
+        role: m.role === 'assistant' ? 'assistant' : 'user',
         content: m.content,
       }));
 
-    // Call AI with streaming
+    // Call AI (non-streaming for reliability, then stream the processed result)
     const zai = await ZAI.create();
-    const stream = await zai.chat.completions.create({
-      messages: [{ role: 'system', content: SYSTEM_PROMPT }, ...messages],
-      stream: true,
-    });
+    
+    let aiContent = '';
+    
+    try {
+      // Try streaming first with SSE parsing
+      const stream = await zai.chat.completions.create({
+        messages: [{ role: 'system', content: SYSTEM_PROMPT }, ...messages],
+        stream: true,
+      });
 
-    const encoder = new TextEncoder();
-    let accumulated = '';
+      const reader = (stream as ReadableStream<Uint8Array>).getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+      const encoder = new TextEncoder();
 
-    const readable = new ReadableStream({
-      async start(controller) {
-        try {
-          for await (const chunk of stream) {
-            const content = chunk.choices[0]?.delta?.content || '';
-            if (content) {
-              accumulated += content;
-              controller.enqueue(encoder.encode(content));
+      // Create our own readable stream that pipes AI content to the client
+      const readable = new ReadableStream({
+        async start(controller) {
+          try {
+            while (true) {
+              const { done, value } = await reader.read();
+              if (done) break;
+
+              buffer += decoder.decode(value, { stream: true });
+              const events = buffer.split('\n\n');
+              buffer = events.pop() || '';
+
+              for (const event of events) {
+                for (const line of event.split('\n')) {
+                  if (line.startsWith('data: ')) {
+                    const data = line.slice(6).trim();
+                    if (data === '[DONE]') continue;
+                    try {
+                      const parsed = JSON.parse(data);
+                      const content = parsed.choices?.[0]?.delta?.content || '';
+                      if (content) {
+                        aiContent += content;
+                        controller.enqueue(encoder.encode(content));
+                      }
+                    } catch {}
+                  }
+                }
+              }
             }
+
+            // Process any remaining buffer
+            if (buffer) {
+              for (const line of buffer.split('\n')) {
+                if (line.startsWith('data: ')) {
+                  const data = line.slice(6).trim();
+                  if (data === '[DONE]') continue;
+                  try {
+                    const parsed = JSON.parse(data);
+                    const content = parsed.choices?.[0]?.delta?.content || '';
+                    if (content) {
+                      aiContent += content;
+                      controller.enqueue(encoder.encode(content));
+                    }
+                  } catch {}
+                }
+              }
+            }
+
+            controller.close();
+
+            // After streaming is done, process the response and save
+            if (aiContent) {
+              const processedOutput = await processAiResponse(aiContent, workspaceId);
+              await supabaseAdmin.from('messages').insert({
+                workspace_id: workspaceId,
+                role: 'assistant',
+                content: processedOutput,
+              });
+            }
+          } catch (error) {
+            console.error('Stream processing error:', error);
+            if (aiContent) {
+              const processedOutput = await processAiResponse(aiContent, workspaceId);
+              await supabaseAdmin.from('messages').insert({
+                workspace_id: workspaceId,
+                role: 'assistant',
+                content: processedOutput,
+              });
+            }
+            try { controller.close(); } catch {}
           }
-          controller.close();
+        },
+      });
 
-          // Process AI response to execute terminal commands
-          const processedOutput = await processAiResponse(accumulated, workspaceId);
+      return new Response(readable, {
+        headers: {
+          'Content-Type': 'text/plain; charset=utf-8',
+          'Cache-Control': 'no-cache',
+          'Connection': 'keep-alive',
+        },
+      });
+    } catch (streamError) {
+      console.error('Streaming failed, trying non-streaming:', streamError);
+      
+      // Fallback to non-streaming
+      const completion = await zai.chat.completions.create({
+        messages: [{ role: 'system', content: SYSTEM_PROMPT }, ...messages],
+      });
 
-          // Save processed AI response
-          await supabaseAdmin.from('messages').insert({
-            workspace_id: workspaceId,
-            role: 'assistant',
-            content: processedOutput,
-          });
-        } catch (error) {
-          console.error('Stream error:', error);
-          if (accumulated) {
-            await supabaseAdmin.from('messages').insert({
-              workspace_id: workspaceId,
-              role: 'assistant',
-              content: accumulated,
-            });
-          }
-          controller.error(error);
-        }
-      },
-    });
+      aiContent = completion.choices?.[0]?.message?.content || '';
+      
+      if (!aiContent) {
+        return NextResponse.json({ error: 'AI returned empty response' }, { status: 500 });
+      }
 
-    return new Response(readable, {
-      headers: {
-        'Content-Type': 'text/plain; charset=utf-8',
-        'Cache-Control': 'no-cache',
-        'Connection': 'keep-alive',
-      },
-    });
+      // Process the response
+      const processedOutput = await processAiResponse(aiContent, workspaceId);
+
+      // Save to DB
+      await supabaseAdmin.from('messages').insert({
+        workspace_id: workspaceId,
+        role: 'assistant',
+        content: processedOutput,
+      });
+
+      return new Response(processedOutput, {
+        headers: { 'Content-Type': 'text/plain; charset=utf-8' },
+      });
+    }
   } catch (error: any) {
     console.error('Chat API error:', error);
     return NextResponse.json({ error: error.message || 'Failed to get AI response' }, { status: 500 });
