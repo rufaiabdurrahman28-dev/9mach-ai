@@ -1,22 +1,18 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { db } from '@/lib/db';
+import { supabaseAdmin } from '@/lib/supabase-admin';
 import { cookies } from 'next/headers';
 
 export async function GET(req: NextRequest) {
   try {
     const cookieStore = await cookies();
-    const token = cookieStore.get('session_token')?.value;
+    const accessToken = cookieStore.get('sb-access-token')?.value;
 
-    if (!token) {
+    if (!accessToken) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     }
 
-    const session = await db.session.findUnique({
-      where: { token },
-      include: { user: true },
-    });
-
-    if (!session) {
+    const { data: { user }, error: authError } = await supabaseAdmin.auth.getUser(accessToken);
+    if (authError || !user) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     }
 
@@ -28,20 +24,38 @@ export async function GET(req: NextRequest) {
     }
 
     // Verify workspace belongs to user
-    const workspace = await db.workspace.findFirst({
-      where: { id: workspaceId, userId: session.user.id },
-    });
+    const { data: workspace } = await supabaseAdmin
+      .from('nimarc_workspaces')
+      .select('id')
+      .eq('id', workspaceId)
+      .eq('user_id', user.id)
+      .single();
 
     if (!workspace) {
       return NextResponse.json({ error: 'Workspace not found' }, { status: 404 });
     }
 
-    const messages = await db.message.findMany({
-      where: { workspaceId },
-      orderBy: { createdAt: 'asc' },
-    });
+    const { data: messages, error } = await supabaseAdmin
+      .from('nimarc_messages')
+      .select('*')
+      .eq('workspace_id', workspaceId)
+      .order('created_at', { ascending: true });
 
-    return NextResponse.json({ messages });
+    if (error) {
+      console.error('Fetch messages error:', error);
+      return NextResponse.json({ messages: [] });
+    }
+
+    // Map to camelCase
+    const mapped = (messages || []).map((m: any) => ({
+      id: m.id,
+      workspaceId: m.workspace_id,
+      role: m.role,
+      content: m.content,
+      createdAt: m.created_at,
+    }));
+
+    return NextResponse.json({ messages: mapped });
   } catch (error: any) {
     console.error('Get messages error:', error);
     return NextResponse.json({ error: 'Failed to fetch messages' }, { status: 500 });

@@ -1,6 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { db } from '@/lib/db';
-import { cookies } from 'next/headers';
+import { supabaseAdmin } from '@/lib/supabase-admin';
 
 export async function POST(req: NextRequest) {
   try {
@@ -18,38 +17,57 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'Password must be at least 6 characters' }, { status: 400 });
     }
 
-    const existing = await db.user.findUnique({ where: { email } });
-    if (existing) {
-      return NextResponse.json({ error: 'Email already registered' }, { status: 409 });
+    // Create user in Supabase Auth
+    const { data: authData, error: authError } = await supabaseAdmin.auth.admin.createUser({
+      email,
+      password,
+      email_confirm: true,
+      user_metadata: { full_name: fullName },
+    });
+
+    if (authError) {
+      if (authError.message.includes('already registered')) {
+        return NextResponse.json({ error: 'Email already registered' }, { status: 409 });
+      }
+      return NextResponse.json({ error: authError.message }, { status: 400 });
     }
 
-    // In production, hash the password with bcrypt. For v1 demo, store as-is.
-    const user = await db.user.create({
-      data: {
+    const userId = authData.user.id;
+
+    // Create profile with is_approved = false
+    const { error: profileError } = await supabaseAdmin
+      .from('nimarc_users')
+      .insert({
+        id: userId,
         email,
-        fullName,
-        password,
-        isApproved: false,
-      },
-    });
+        full_name: fullName,
+        is_approved: false,
+      });
 
-    // Create session
-    const token = crypto.randomUUID();
-    await db.session.create({
-      data: { userId: user.id, token },
-    });
-
-    const cookieStore = await cookies();
-    cookieStore.set('session_token', token, {
-      httpOnly: true,
-      secure: process.env.NODE_ENV === 'production',
-      sameSite: 'lax',
-      maxAge: 60 * 60 * 24 * 7, // 7 days
-      path: '/',
-    });
+    if (profileError) {
+      console.error('Profile creation error:', profileError);
+      // If nimarc_users table doesn't exist, try profiles table
+      const { error: profileError2 } = await supabaseAdmin
+        .from('profiles')
+        .upsert({
+          id: userId,
+          email,
+          full_name: fullName,
+          role: 'user',
+        });
+      
+      if (profileError2) {
+        console.error('Profile creation error (fallback):', profileError2);
+      }
+    }
 
     return NextResponse.json({
-      user: { id: user.id, email: user.email, fullName: user.fullName, isApproved: user.isApproved },
+      user: {
+        id: userId,
+        email,
+        fullName,
+        isApproved: false,
+      },
     });
   } catch (error: any) {
     console.error('Signup error:', error);
