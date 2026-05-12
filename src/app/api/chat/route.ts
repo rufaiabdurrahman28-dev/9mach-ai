@@ -3,7 +3,7 @@ import { supabaseAdmin } from '@/lib/supabase-admin';
 import { cookies } from 'next/headers';
 import ZAI from 'z-ai-web-dev-sdk';
 
-const TERMINAL_SERVICE_URL = 'http://localhost:3003';
+const TERMINAL_SERVICE_URL = process.env.TERMINAL_SERVICE_URL || 'http://localhost:3003';
 
 const SYSTEM_PROMPT = `You are 9mach AI, an expert full-stack developer who works through a terminal. You build REAL applications by creating files and executing commands.
 
@@ -87,7 +87,7 @@ async function processAiResponse(aiResponse: string, workspaceId: string): Promi
       inFile = true;
       filePath = line.replace(':::file:', '').trim();
       fileContent = '';
-      output += `\n\x1b[33m📝 Creating file: ${filePath}\x1b[0m\n`;
+      output += `\n\x1b[33mCreating file: ${filePath}\x1b[0m\n`;
       continue;
     }
 
@@ -100,9 +100,9 @@ async function processAiResponse(aiResponse: string, workspaceId: string): Promi
       });
 
       if (result.success) {
-        output += `\x1b[32m✓ File created: ${filePath}\x1b[0m\n`;
+        output += `\x1b[32mFile created: ${filePath}\x1b[0m\n`;
       } else {
-        output += `\x1b[31m✗ Failed to create file: ${result.output}\x1b[0m\n`;
+        output += `\x1b[31mFailed to create file: ${result.output}\x1b[0m\n`;
       }
 
       filePath = '';
@@ -128,16 +128,16 @@ async function processAiResponse(aiResponse: string, workspaceId: string): Promi
         output += `${result.output}\n`;
       }
       if (result.success) {
-        output += '\x1b[32m✓ Command completed\x1b[0m\n';
+        output += '\x1b[32mCommand completed\x1b[0m\n';
       } else {
-        output += '\x1b[31m✗ Command failed\x1b[0m\n';
+        output += '\x1b[31mCommand failed\x1b[0m\n';
       }
       continue;
     }
 
     if (line.startsWith(':::mkdir:')) {
       const dirPath = line.replace(':::mkdir:', '').trim();
-      output += `\n\x1b[33m📁 Creating directory: ${dirPath}\x1b[0m\n`;
+      output += `\n\x1b[33mCreating directory: ${dirPath}\x1b[0m\n`;
 
       const result = await callTerminalService('/api/create-dir', {
         workspaceId,
@@ -145,9 +145,9 @@ async function processAiResponse(aiResponse: string, workspaceId: string): Promi
       });
 
       if (result.success) {
-        output += '\x1b[32m✓ Directory created\x1b[0m\n';
+        output += '\x1b[32mDirectory created\x1b[0m\n';
       } else {
-        output += '\x1b[31m✗ Failed to create directory\x1b[0m\n';
+        output += '\x1b[31mFailed to create directory\x1b[0m\n';
       }
       continue;
     }
@@ -163,51 +163,49 @@ async function processAiResponse(aiResponse: string, workspaceId: string): Promi
     });
 
     if (result.success) {
-      output += `\n\x1b[32m✓ File created: ${filePath}\x1b[0m\n`;
+      output += `\n\x1b[32mFile created: ${filePath}\x1b[0m\n`;
     } else {
-      output += `\n\x1b[31m✗ Failed to create file: ${result.output}\x1b[0m\n`;
+      output += `\n\x1b[31mFailed to create file: ${result.output}\x1b[0m\n`;
     }
   }
 
   return output;
 }
 
+async function getAuthUser() {
+  const cookieStore = await cookies();
+  const accessToken = cookieStore.get('sb-access-token')?.value;
+  if (!accessToken) return null;
+
+  const { data: { user }, error } = await supabaseAdmin.auth.getUser(accessToken);
+  if (error || !user) return null;
+
+  let isApproved = false;
+  const { data: profile } = await supabaseAdmin
+    .from('profiles')
+    .select('role, is_approved')
+    .eq('id', user.id)
+    .single();
+
+  if (profile) {
+    if (profile.is_approved === true) {
+      isApproved = true;
+    } else if (profile.role === 'admin' || profile.role === 'manager') {
+      isApproved = true;
+    }
+  }
+
+  return { id: user.id, email: user.email, isApproved };
+}
+
 export async function POST(req: NextRequest) {
   try {
-    const cookieStore = await cookies();
-    const accessToken = cookieStore.get('sb-access-token')?.value;
-
-    if (!accessToken) {
+    const user = await getAuthUser();
+    if (!user) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     }
 
-    const { data: { user }, error: authError } = await supabaseAdmin.auth.getUser(accessToken);
-    if (authError || !user) {
-      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
-    }
-
-    // Check approval
-    let isApproved = false;
-    const { data: nimarcUser } = await supabaseAdmin
-      .from('nimarc_users')
-      .select('is_approved')
-      .eq('id', user.id)
-      .single();
-
-    if (nimarcUser) {
-      isApproved = nimarcUser.is_approved;
-    } else {
-      const { data: profile } = await supabaseAdmin
-        .from('profiles')
-        .select('role')
-        .eq('id', user.id)
-        .single();
-      if (profile && (profile.role === 'admin' || profile.role === 'manager')) {
-        isApproved = true;
-      }
-    }
-
-    if (!isApproved) {
+    if (!user.isApproved) {
       return NextResponse.json({ error: 'Not approved' }, { status: 403 });
     }
 
@@ -219,7 +217,7 @@ export async function POST(req: NextRequest) {
 
     // Verify workspace belongs to user
     const { data: workspace } = await supabaseAdmin
-      .from('nimarc_workspaces')
+      .from('workspaces')
       .select('id')
       .eq('id', workspaceId)
       .eq('user_id', user.id)
@@ -230,7 +228,7 @@ export async function POST(req: NextRequest) {
     }
 
     // Save user message
-    await supabaseAdmin.from('nimarc_messages').insert({
+    await supabaseAdmin.from('messages').insert({
       workspace_id: workspaceId,
       role: 'user',
       content,
@@ -238,7 +236,7 @@ export async function POST(req: NextRequest) {
 
     // Fetch last 30 messages for context
     const { data: history } = await supabaseAdmin
-      .from('nimarc_messages')
+      .from('messages')
       .select('*')
       .eq('workspace_id', workspaceId)
       .order('created_at', { ascending: false })
@@ -277,17 +275,17 @@ export async function POST(req: NextRequest) {
           const processedOutput = await processAiResponse(accumulated, workspaceId);
 
           // Save processed AI response
-          await supabaseAdmin.from('nimarc_messages').insert({
+          await supabaseAdmin.from('messages').insert({
             workspace_id: workspaceId,
-            role: 'ai',
+            role: 'assistant',
             content: processedOutput,
           });
         } catch (error) {
           console.error('Stream error:', error);
           if (accumulated) {
-            await supabaseAdmin.from('nimarc_messages').insert({
+            await supabaseAdmin.from('messages').insert({
               workspace_id: workspaceId,
-              role: 'ai',
+              role: 'assistant',
               content: accumulated,
             });
           }

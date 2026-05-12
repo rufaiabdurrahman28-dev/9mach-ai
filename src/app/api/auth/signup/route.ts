@@ -34,30 +34,47 @@ export async function POST(req: NextRequest) {
 
     const userId = authData.user.id;
 
-    // Create profile with is_approved = false
+    // The trigger (handle_new_user) auto-creates a profile row.
+    // Update it with is_approved = false and full_name
     const { error: profileError } = await supabaseAdmin
-      .from('nimarc_users')
-      .insert({
-        id: userId,
-        email,
+      .from('profiles')
+      .update({
         full_name: fullName,
         is_approved: false,
-      });
+      })
+      .eq('id', userId);
 
     if (profileError) {
-      console.error('Profile creation error:', profileError);
-      // If nimarc_users table doesn't exist, try profiles table
-      const { error: profileError2 } = await supabaseAdmin
+      console.error('Profile update error:', profileError);
+      // If is_approved column doesn't exist yet, just update full_name
+      const { error: fallbackError } = await supabaseAdmin
         .from('profiles')
-        .upsert({
-          id: userId,
-          email,
-          full_name: fullName,
-          role: 'user',
-        });
-      
-      if (profileError2) {
-        console.error('Profile creation error (fallback):', profileError2);
+        .update({ full_name: fullName })
+        .eq('id', userId);
+
+      if (fallbackError) {
+        console.error('Profile fallback update error:', fallbackError);
+      }
+    }
+
+    // Auto-approve if the user's role is admin/manager (existing users)
+    let isApproved = false;
+    const { data: profile } = await supabaseAdmin
+      .from('profiles')
+      .select('role, is_approved')
+      .eq('id', userId)
+      .single();
+
+    if (profile) {
+      if (profile.is_approved === true) {
+        isApproved = true;
+      } else if (profile.role === 'admin' || profile.role === 'manager') {
+        isApproved = true;
+        // Update is_approved
+        await supabaseAdmin
+          .from('profiles')
+          .update({ is_approved: true })
+          .eq('id', userId);
       }
     }
 
@@ -66,7 +83,7 @@ export async function POST(req: NextRequest) {
         id: userId,
         email,
         fullName,
-        isApproved: false,
+        isApproved,
       },
     });
   } catch (error: any) {

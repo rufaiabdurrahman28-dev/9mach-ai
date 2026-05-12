@@ -18,33 +18,31 @@ export async function GET() {
       return NextResponse.json({ user: null });
     }
 
-    // Check approval status
+    // Check approval status from profiles table
     let isApproved = false;
-    const { data: nimarcUser } = await supabaseAdmin
-      .from('nimarc_users')
-      .select('is_approved, full_name')
+    let fullName = '';
+    const { data: profile } = await supabaseAdmin
+      .from('profiles')
+      .select('role, is_approved, full_name')
       .eq('id', user.id)
       .single();
 
-    if (nimarcUser) {
-      isApproved = nimarcUser.is_approved;
-    } else {
-      const { data: profile } = await supabaseAdmin
-        .from('profiles')
-        .select('role, full_name')
-        .eq('id', user.id)
-        .single();
-
-      if (profile && (profile.role === 'admin' || profile.role === 'manager')) {
+    if (profile) {
+      fullName = profile.full_name || user.user_metadata?.full_name || '';
+      if (profile.is_approved === true) {
+        isApproved = true;
+      } else if (profile.role === 'admin' || profile.role === 'manager') {
         isApproved = true;
       }
+    } else {
+      fullName = user.user_metadata?.full_name || '';
     }
 
     return NextResponse.json({
       user: {
         id: user.id,
         email: user.email,
-        fullName: nimarcUser?.full_name || user.user_metadata?.full_name || '',
+        fullName,
         isApproved,
       },
     });

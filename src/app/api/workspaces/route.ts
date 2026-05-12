@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { cookies } from 'next/headers';
 
-async function getAuthUser(req: NextRequest) {
+async function getAuthUser() {
   const cookieStore = await cookies();
   const accessToken = cookieStore.get('sb-access-token')?.value;
   if (!accessToken) return null;
@@ -10,23 +10,18 @@ async function getAuthUser(req: NextRequest) {
   const { data: { user }, error } = await supabaseAdmin.auth.getUser(accessToken);
   if (error || !user) return null;
 
-  // Check approval
+  // Check approval from profiles table
   let isApproved = false;
-  const { data: nimarcUser } = await supabaseAdmin
-    .from('nimarc_users')
-    .select('is_approved')
+  const { data: profile } = await supabaseAdmin
+    .from('profiles')
+    .select('role, is_approved')
     .eq('id', user.id)
     .single();
 
-  if (nimarcUser) {
-    isApproved = nimarcUser.is_approved;
-  } else {
-    const { data: profile } = await supabaseAdmin
-      .from('profiles')
-      .select('role')
-      .eq('id', user.id)
-      .single();
-    if (profile && (profile.role === 'admin' || profile.role === 'manager')) {
+  if (profile) {
+    if (profile.is_approved === true) {
+      isApproved = true;
+    } else if (profile.role === 'admin' || profile.role === 'manager') {
       isApproved = true;
     }
   }
@@ -36,13 +31,13 @@ async function getAuthUser(req: NextRequest) {
 
 export async function GET() {
   try {
-    const user = await getAuthUser(new NextRequest('http://localhost'));
+    const user = await getAuthUser();
     if (!user) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     }
 
     const { data: workspaces, error } = await supabaseAdmin
-      .from('nimarc_workspaces')
+      .from('workspaces')
       .select('*')
       .eq('user_id', user.id)
       .order('created_at', { ascending: false });
@@ -69,15 +64,19 @@ export async function GET() {
 
 export async function POST(req: NextRequest) {
   try {
-    const user = await getAuthUser(req);
+    const user = await getAuthUser();
     if (!user) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
+
+    if (!user.isApproved) {
+      return NextResponse.json({ error: 'Not approved' }, { status: 403 });
     }
 
     const { name } = await req.json();
 
     const { data: workspace, error } = await supabaseAdmin
-      .from('nimarc_workspaces')
+      .from('workspaces')
       .insert({
         user_id: user.id,
         name: name || 'Untitled Workspace',

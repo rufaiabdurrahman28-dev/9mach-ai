@@ -19,27 +19,24 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'Invalid email or password' }, { status: 401 });
     }
 
-    // Check approval status from nimarc_users table
+    // Check approval status from profiles table
     let isApproved = false;
-    const { data: nimarcUser } = await supabaseAdmin
-      .from('nimarc_users')
-      .select('is_approved, full_name')
+    let fullName = '';
+    const { data: profile } = await supabaseAdmin
+      .from('profiles')
+      .select('role, is_approved, full_name')
       .eq('id', authData.user.id)
       .single();
 
-    if (nimarcUser) {
-      isApproved = nimarcUser.is_approved;
-    } else {
-      // Fallback: check profiles table - managers/admins are auto-approved
-      const { data: profile } = await supabaseAdmin
-        .from('profiles')
-        .select('role, full_name')
-        .eq('id', authData.user.id)
-        .single();
-
-      if (profile && (profile.role === 'admin' || profile.role === 'manager')) {
+    if (profile) {
+      fullName = profile.full_name || authData.user.user_metadata?.full_name || '';
+      if (profile.is_approved === true) {
+        isApproved = true;
+      } else if (profile.role === 'admin' || profile.role === 'manager') {
         isApproved = true;
       }
+    } else {
+      fullName = authData.user.user_metadata?.full_name || '';
     }
 
     // Set session cookie
@@ -47,7 +44,7 @@ export async function POST(req: NextRequest) {
       user: {
         id: authData.user.id,
         email: authData.user.email,
-        fullName: nimarcUser?.full_name || authData.user.user_metadata?.full_name || '',
+        fullName,
         isApproved,
       },
     });
