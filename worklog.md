@@ -3,35 +3,30 @@
 ---
 Task ID: 1
 Agent: Super Z (Main)
-Task: Build 9mach AI — Chat-to-App Builder
+Task: Update 9mach AI to include terminal execution — AI builds real full-stack websites
 
 Work Log:
-- Set up Prisma schema with users, sessions, workspaces, messages tables (SQLite)
-- Built auth API routes: signup, login, logout, session (cookie-based)
-- Built admin approve API route for user approval flow
-- Built workspace API routes: create (POST) and list (GET)
-- Built messages API route: GET with workspace_id filter
-- Built streaming chat API with z-ai-web-dev-sdk, saves messages to DB
-- Built client-side SPA router with views: landing, signup, login, pending, chat
-- Built Landing page with hero text, nav links, demo preview, footer with WhatsApp/Telegram
-- Built Signup page with full name, email, password, confirm password
-- Built Login page with email + password
-- Built Pending approval page with check status button
-- Built Chat workspace with split view (terminal chat + live preview iframe)
-- Built WorkspaceSidebar with + New Workspace button
-- Built terminal-style chat (user@nimarc:~$, AI: format, monospace)
-- Built chat input (black bg, white text, "Describe what you want to build...")
-- Built preview iframe (sandboxed, srcDoc from AI-generated HTML)
-- Added preview toggle, open in new tab, responsive mobile sidebar
-- All navigation items are clickable and wired up
-- Auth protection: unapproved users see pending page, unauthenticated redirected to login
-- Tested all APIs: signup, login, approve, workspaces, messages — all returning correct responses
-- Lint passes with no errors
+- Created terminal execution mini-service (port 3003) with:
+  - POST /api/execute - Run terminal commands in workspace directory
+  - POST /api/write-file - Create files in workspace
+  - POST /api/create-dir - Create directories
+  - GET /api/files - List workspace files
+  - GET /api/preview/:workspaceId - Serve files for live preview
+  - POST /api/cleanup - Delete workspace files
+- Updated AI system prompt to generate structured commands:
+  - :::file:path → creates files
+  - :::exec:command → executes terminal commands
+  - :::mkdir:path → creates directories
+- Updated chat API to parse AI response and execute commands via terminal service
+- Terminal output includes ANSI color codes (green=success, yellow=info, red=error)
+- Updated chat UI TerminalText component to render colored output
+- Live preview now served from terminal service via Caddy gateway (XTransformPort=3003)
+- Added refresh preview button
+- Quick prompt suggestions in empty terminal state
+- All lint checks pass
 
 Stage Summary:
-- Full 9mach AI web application built with Next.js 16, TypeScript, Tailwind CSS, Prisma/SQLite
-- Features: auth flow (signup→pending→approved→chat), workspaces, streaming AI chat, live preview
-- All pages connected with client-side routing, all nav items clickable
-- Database: Prisma + SQLite with users, sessions, workspaces, messages tables
-- AI: z-ai-web-dev-sdk for streaming chat completions
-- UI: White background, terminal-style chat, black input, iframe preview
+- 9mach AI now has terminal execution capability
+- AI can create files, run commands, and build real applications
+- Live preview shows the result in an iframe
+- When user says "Build me a login page", AI creates actual files on disk and serves them

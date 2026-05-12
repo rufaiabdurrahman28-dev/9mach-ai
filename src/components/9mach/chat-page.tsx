@@ -20,23 +20,31 @@ interface ChatPageProps {
   onLogout: () => void;
 }
 
-function extractHtmlFromAi(content: string): string | null {
-  // Try to find HTML code blocks
-  const htmlBlockMatch = content.match(/```html\s*\n([\s\S]*?)```/);
-  if (htmlBlockMatch) {
-    return htmlBlockMatch[1].trim();
+// Parse ANSI-like terminal color codes for rendering
+function TerminalText({ content }: { content: string }) {
+  // Pre-process: convert ANSI sequences into tagged segments
+  const segments: Array<{ text: string; color: string }> = [];
+  let currentColor = '';
+  const parts = content.split(/(\x1b\[\d+m)/);
+
+  for (const part of parts) {
+    if (part === '\x1b[32m') { currentColor = 'text-green-400'; continue; }
+    if (part === '\x1b[33m') { currentColor = 'text-yellow-400'; continue; }
+    if (part === '\x1b[31m') { currentColor = 'text-red-400'; continue; }
+    if (part === '\x1b[0m') { currentColor = ''; continue; }
+    if (!part) continue;
+    segments.push({ text: part, color: currentColor });
   }
 
-  // Try to find any code block that looks like HTML
-  const codeBlockMatch = content.match(/```\s*\n([\s\S]*?)```/);
-  if (codeBlockMatch) {
-    const code = codeBlockMatch[1].trim();
-    if (code.includes('<!DOCTYPE') || code.includes('<html') || code.includes('<body')) {
-      return code;
-    }
-  }
-
-  return null;
+  return (
+    <>
+      {segments.map((seg, i) => (
+        <span key={i} className={seg.color || 'text-gray-300'}>
+          {seg.text}
+        </span>
+      ))}
+    </>
+  );
 }
 
 export function ChatPage({ user, onLogout }: ChatPageProps) {
@@ -46,8 +54,8 @@ export function ChatPage({ user, onLogout }: ChatPageProps) {
   const [input, setInput] = useState('');
   const [isStreaming, setIsStreaming] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(true);
-  const [previewHtml, setPreviewHtml] = useState<string | null>(null);
   const [previewOpen, setPreviewOpen] = useState(true);
+  const [previewUrl, setPreviewUrl] = useState<string>('');
   const chatEndRef = useRef<HTMLDivElement>(null);
   const abortRef = useRef<AbortController | null>(null);
 
@@ -75,7 +83,6 @@ export function ChatPage({ user, onLogout }: ChatPageProps) {
   const fetchMessages = useCallback(async () => {
     if (!activeWorkspaceId) {
       setMessages([]);
-      setPreviewHtml(null);
       return;
     }
     try {
@@ -83,20 +90,21 @@ export function ChatPage({ user, onLogout }: ChatPageProps) {
       const data = await res.json();
       if (data.messages) {
         setMessages(data.messages);
-        // Rebuild preview from last AI message with HTML
-        let lastHtml: string | null = null;
-        for (let i = data.messages.length - 1; i >= 0; i--) {
-          if (data.messages[i].role === 'ai') {
-            lastHtml = extractHtmlFromAi(data.messages[i].content);
-            if (lastHtml) break;
-          }
-        }
-        setPreviewHtml(lastHtml);
       }
     } catch (err) {
       console.error('Failed to fetch messages:', err);
     }
   }, [activeWorkspaceId]);
+
+  // Update preview URL when workspace changes
+  useEffect(() => {
+    if (activeWorkspaceId && previewOpen) {
+      // Use the terminal service for preview via Caddy gateway
+      setPreviewUrl(`/api/preview/${activeWorkspaceId}/?XTransformPort=3003`);
+    } else {
+      setPreviewUrl('');
+    }
+  }, [activeWorkspaceId, previewOpen]);
 
   useEffect(() => {
     fetchWorkspaces();
@@ -126,6 +134,13 @@ export function ChatPage({ user, onLogout }: ChatPageProps) {
       console.error('Failed to create workspace:', err);
     }
   };
+
+  const refreshPreview = useCallback(() => {
+    if (activeWorkspaceId && previewOpen) {
+      // Force iframe refresh by adding timestamp
+      setPreviewUrl(`/api/preview/${activeWorkspaceId}/?XTransformPort=3003&_t=${Date.now()}`);
+    }
+  }, [activeWorkspaceId, previewOpen]);
 
   const handleSend = async () => {
     const text = input.trim();
@@ -176,7 +191,7 @@ export function ChatPage({ user, onLogout }: ChatPageProps) {
           const chunk = decoder.decode(value, { stream: true });
           accumulated += chunk;
 
-          // Update the AI message
+          // Update the AI message in real-time
           setMessages((prev) => {
             const updated = [...prev];
             const lastMsg = updated[updated.length - 1];
@@ -185,16 +200,15 @@ export function ChatPage({ user, onLogout }: ChatPageProps) {
             }
             return updated;
           });
-
-          // Update preview if HTML detected
-          const html = extractHtmlFromAi(accumulated);
-          if (html) {
-            setPreviewHtml(html);
-          }
         }
       }
 
-      // Refresh messages from DB to get proper IDs
+      // Refresh preview after AI completes
+      setTimeout(() => {
+        refreshPreview();
+      }, 1000);
+
+      // Refresh messages from DB to get processed output
       fetchMessages();
     } catch (err: any) {
       if (err.name !== 'AbortError') {
@@ -252,6 +266,15 @@ export function ChatPage({ user, onLogout }: ChatPageProps) {
           >
             {previewOpen ? 'Hide Preview' : 'Show Preview'}
           </button>
+          {previewOpen && (
+            <button
+              onClick={refreshPreview}
+              className="text-xs font-medium text-gray-500 hover:text-gray-900 transition-colors px-3 py-1.5 rounded-lg hover:bg-gray-100"
+              title="Refresh Preview"
+            >
+              ↻ Refresh
+            </button>
+          )}
           <div className="flex items-center gap-2">
             <div className="h-7 w-7 rounded-full bg-gray-200 flex items-center justify-center">
               <span className="text-xs font-semibold text-gray-600">
@@ -269,7 +292,6 @@ export function ChatPage({ user, onLogout }: ChatPageProps) {
         {/* Sidebar - Workspaces */}
         {sidebarOpen && (
           <>
-            {/* Mobile overlay */}
             <div
               className="fixed inset-0 bg-black/30 z-30 lg:hidden"
               onClick={() => setSidebarOpen(false)}
@@ -313,13 +335,18 @@ export function ChatPage({ user, onLogout }: ChatPageProps) {
 
         {/* Main Split View */}
         <div className="flex-1 flex min-w-0">
-          {/* Chat Panel */}
+          {/* Chat Panel - Terminal */}
           <div className={`flex flex-col ${previewOpen ? 'w-1/2' : 'w-full'} border-r border-gray-100`}>
             {/* Chat Header */}
-            <div className="px-4 py-2.5 border-b border-gray-100 shrink-0">
+            <div className="px-4 py-2.5 border-b border-gray-100 shrink-0 flex items-center justify-between">
               <p className="text-sm font-medium text-gray-900 truncate">
                 {activeWorkspace?.name || 'Select a workspace'}
               </p>
+              {activeWorkspaceId && (
+                <span className="text-xs text-gray-400 font-mono">
+                  ~/project
+                </span>
+              )}
             </div>
 
             {/* Messages - Terminal Style */}
@@ -329,6 +356,12 @@ export function ChatPage({ user, onLogout }: ChatPageProps) {
                   <div className="text-center">
                     <p className="text-emerald-400 font-mono text-sm mb-1">user@nimarc:~$</p>
                     <p className="text-gray-500 font-mono text-xs">Describe what you want to build...</p>
+                    <div className="mt-6 text-left max-w-xs mx-auto">
+                      <p className="text-gray-600 font-mono text-xs mb-2">Try:</p>
+                      <p className="text-gray-400 font-mono text-xs hover:text-white cursor-pointer" onClick={() => setInput('Build me a modern login page')}>→ Build me a modern login page</p>
+                      <p className="text-gray-400 font-mono text-xs hover:text-white cursor-pointer mt-1" onClick={() => setInput('Create a dashboard with charts and stats')}>→ Create a dashboard with charts</p>
+                      <p className="text-gray-400 font-mono text-xs hover:text-white cursor-pointer mt-1" onClick={() => setInput('Make a portfolio website with animations')}>→ Make a portfolio website</p>
+                    </div>
                   </div>
                 </div>
               ) : (
@@ -341,14 +374,15 @@ export function ChatPage({ user, onLogout }: ChatPageProps) {
                           <span className="text-white ml-2 whitespace-pre-wrap">{msg.content}</span>
                         </div>
                       ) : (
-                        <div>
-                          <span className="text-gray-400">AI:</span>
-                          <div className="text-gray-300 mt-1 whitespace-pre-wrap text-xs leading-relaxed">
-                            {msg.content || (
+                        <div className="pl-0">
+                          <span className="text-cyan-400 font-bold">AI:</span>
+                          <div className="mt-1 whitespace-pre-wrap text-xs leading-relaxed">
+                            <TerminalText content={msg.content || ''} />
+                            {!msg.content && isStreaming && (
                               <span className="inline-flex gap-1">
-                                <span className="animate-pulse">●</span>
-                                <span className="animate-pulse [animation-delay:0.2s]">●</span>
-                                <span className="animate-pulse [animation-delay:0.4s]">●</span>
+                                <span className="animate-pulse text-emerald-400">●</span>
+                                <span className="animate-pulse text-emerald-400 [animation-delay:0.2s]">●</span>
+                                <span className="animate-pulse text-emerald-400 [animation-delay:0.4s]">●</span>
                               </span>
                             )}
                           </div>
@@ -361,7 +395,7 @@ export function ChatPage({ user, onLogout }: ChatPageProps) {
               )}
             </div>
 
-            {/* Chat Input */}
+            {/* Chat Input - Terminal Style */}
             <div className="shrink-0 bg-black p-3">
               <div className="flex items-end gap-2">
                 <div className="flex-1 flex items-end bg-gray-900 rounded-lg border border-gray-800">
@@ -403,30 +437,27 @@ export function ChatPage({ user, onLogout }: ChatPageProps) {
           {previewOpen && (
             <div className="w-1/2 flex flex-col bg-white">
               <div className="px-4 py-2.5 border-b border-gray-100 flex items-center justify-between shrink-0">
-                <p className="text-sm font-medium text-gray-900">Live Preview</p>
-                {previewHtml && (
-                  <button
-                    onClick={() => {
-                      // Open in new tab
-                      const w = window.open('', '_blank');
-                      if (w) {
-                        w.document.write(previewHtml);
-                        w.document.close();
-                      }
-                    }}
-                    className="text-xs text-gray-400 hover:text-gray-600 transition-colors"
-                  >
-                    Open in new tab
-                  </button>
-                )}
+                <div className="flex items-center gap-2">
+                  <div className="h-2 w-2 rounded-full bg-emerald-500" />
+                  <p className="text-sm font-medium text-gray-900">Live Preview</p>
+                </div>
+                <button
+                  onClick={refreshPreview}
+                  className="text-xs text-gray-400 hover:text-gray-600 transition-colors flex items-center gap-1"
+                >
+                  <svg className="h-3 w-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M16.023 9.348h4.992v-.001M2.985 19.644v-4.992m0 0h4.992m-4.993 0l3.181 3.183a8.25 8.25 0 0013.803-3.7M4.031 9.865a8.25 8.25 0 0113.803-3.7l3.181 3.182" />
+                  </svg>
+                  Refresh
+                </button>
               </div>
               <div className="flex-1 bg-white">
-                {previewHtml ? (
+                {previewUrl ? (
                   <iframe
-                    sandbox="allow-scripts allow-same-origin"
-                    srcDoc={previewHtml}
+                    src={previewUrl}
                     className="w-full h-full border-0"
                     title="Preview"
+                    sandbox="allow-scripts allow-same-origin allow-forms allow-popups"
                   />
                 ) : (
                   <div className="h-full flex items-center justify-center text-gray-300">

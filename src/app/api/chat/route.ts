@@ -3,18 +3,186 @@ import { db } from '@/lib/db';
 import { cookies } from 'next/headers';
 import ZAI from 'z-ai-web-dev-sdk';
 
-const SYSTEM_PROMPT = `You are 9mach AI, an expert full-stack developer. When the user asks you to build something:
+const TERMINAL_SERVICE_URL = 'http://localhost:3003';
 
-1. Output complete, working HTML code with inline CSS and JavaScript
-2. The code must be self-contained and runnable in an iframe
-3. Make the design modern, responsive, and visually appealing
-4. Use clean, semantic HTML5
-5. For styling, use modern CSS (flexbox, grid, custom properties, animations)
-6. For interactivity, use vanilla JavaScript
-7. Always wrap the complete HTML in a single code block with language tag "html"
-8. Keep responses concise — focus on the code output
-9. If the user asks a question (not to build something), answer helpfully without code
-10. When building UIs, make them production-quality with proper spacing, colors, and typography`;
+const SYSTEM_PROMPT = `You are 9mach AI, an expert full-stack developer who works through a terminal. You build REAL applications by creating files and executing commands.
+
+When the user asks you to build something, you MUST respond using these special command formats:
+
+1. **Create a file** (most common):
+:::file:path/to/file.ext
+<file contents here>
+:::endfile
+
+2. **Execute a terminal command**:
+:::exec:command here
+
+3. **Create a directory**:
+:::mkdir:path/to/directory
+
+4. **Regular text** (explanations, questions):
+Just type normally outside of command blocks.
+
+**IMPORTANT RULES:**
+- When building a web app, ALWAYS create a complete \`index.html\` file that works standalone
+- For React apps, create a single HTML file that loads React from CDN (https://unpkg.com/react@18/umd/react.production.min.js and https://unpkg.com/react-dom@18/umd/react-dom.production.min.js) and uses Babel standalone for JSX
+- For styling, include Tailwind CSS via CDN (<script src="https://cdn.tailwindcss.com"></script>)
+- Make ALL code production-quality with modern, responsive design
+- Always explain what you're doing before and after commands
+- Create proper project structures (src/, components/, etc.) when building complex apps
+- Keep responses concise but thorough
+- If the user asks a question (not to build something), just answer normally without commands
+- When building UIs, make them visually stunning with proper colors, spacing, and typography
+- ALWAYS include proper meta viewport tag for responsive design
+
+**Example response for "Build me a login page":**
+
+I'll create a modern login page for you with Tailwind CSS styling.
+
+:::file:index.html
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Login</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-gray-50 min-h-screen flex items-center justify-center">
+    <!-- Login form here -->
+</body>
+</html>
+:::endfile
+
+Login page created! The preview should now show a modern login form with email and password fields.`;
+
+interface TerminalResult {
+  success: boolean;
+  output: string;
+  path?: string;
+}
+
+async function callTerminalService(endpoint: string, body: any): Promise<TerminalResult> {
+  try {
+    const res = await fetch(`${TERMINAL_SERVICE_URL}${endpoint}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    return await res.json();
+  } catch (error: any) {
+    return { success: false, output: `Terminal service error: ${error.message}` };
+  }
+}
+
+// Parse AI response and execute commands, return annotated output
+async function processAiResponse(aiResponse: string, workspaceId: string): Promise<string> {
+  const lines = aiResponse.split('\n');
+  let output = '';
+  let inFile = false;
+  let filePath = '';
+  let fileContent = '';
+  let hasExecutedAnything = false;
+
+  for (const line of lines) {
+    // Check for file command start
+    if (line.startsWith(':::file:')) {
+      inFile = true;
+      filePath = line.replace(':::file:', '').trim();
+      fileContent = '';
+      output += `\n\x1b[33m📝 Creating file: ${filePath}\x1b[0m\n`;
+      hasExecutedAnything = true;
+      continue;
+    }
+
+    // Check for file command end
+    if (line.trim() === ':::endfile' && inFile) {
+      inFile = false;
+      const result = await callTerminalService('/api/write-file', {
+        workspaceId,
+        filePath,
+        content: fileContent,
+      });
+
+      if (result.success) {
+        output += `\x1b[32m✓ File created: ${filePath}\x1b[0m\n`;
+      } else {
+        output += `\x1b[31m✗ Failed to create file: ${result.output}\x1b[0m\n`;
+      }
+
+      filePath = '';
+      fileContent = '';
+      continue;
+    }
+
+    // Accumulate file content
+    if (inFile) {
+      fileContent += (fileContent ? '\n' : '') + line;
+      continue;
+    }
+
+    // Check for exec command
+    if (line.startsWith(':::exec:')) {
+      const command = line.replace(':::exec:', '').trim();
+      output += `\n\x1b[33m$ ${command}\x1b[0m\n`;
+      hasExecutedAnything = true;
+
+      const result = await callTerminalService('/api/execute', {
+        workspaceId,
+        command,
+      });
+
+      if (result.output) {
+        output += `${result.output}\n`;
+      }
+      if (result.success) {
+        output += '\x1b[32m✓ Command completed\x1b[0m\n';
+      } else {
+        output += '\x1b[31m✗ Command failed\x1b[0m\n';
+      }
+      continue;
+    }
+
+    // Check for mkdir command
+    if (line.startsWith(':::mkdir:')) {
+      const dirPath = line.replace(':::mkdir:', '').trim();
+      output += `\n\x1b[33m📁 Creating directory: ${dirPath}\x1b[0m\n`;
+      hasExecutedAnything = true;
+
+      const result = await callTerminalService('/api/create-dir', {
+        workspaceId,
+        dirPath,
+      });
+
+      if (result.success) {
+        output += '\x1b[32m✓ Directory created\x1b[0m\n';
+      } else {
+        output += '\x1b[31m✗ Failed to create directory\x1b[0m\n';
+      }
+      continue;
+    }
+
+    // Regular text line
+    output += line + '\n';
+  }
+
+  // If there's still an open file block (AI didn't close it properly)
+  if (inFile && filePath) {
+    const result = await callTerminalService('/api/write-file', {
+      workspaceId,
+      filePath,
+      content: fileContent,
+    });
+
+    if (result.success) {
+      output += `\n\x1b[32m✓ File created: ${filePath}\x1b[0m\n`;
+    } else {
+      output += `\n\x1b[31m✗ Failed to create file: ${result.output}\x1b[0m\n`;
+    }
+  }
+
+  return output;
+}
 
 export async function POST(req: NextRequest) {
   try {
@@ -92,17 +260,19 @@ export async function POST(req: NextRequest) {
           }
           controller.close();
 
-          // Save AI response after streaming completes
+          // Process the AI response to execute terminal commands
+          const processedOutput = await processAiResponse(accumulated, workspaceId);
+
+          // Save the processed output (with execution results) as the AI message
           await db.message.create({
             data: {
               workspaceId,
               role: 'ai',
-              content: accumulated,
+              content: processedOutput,
             },
           });
         } catch (error) {
           console.error('Stream error:', error);
-          // Still save whatever we accumulated
           if (accumulated) {
             await db.message.create({
               data: {
