@@ -1,24 +1,43 @@
-import { NextResponse } from 'next/server';
-import { supabaseAdmin } from '@/lib/supabase-admin';
-import { cookies } from 'next/headers';
+import { NextRequest, NextResponse } from 'next/server';
+import { createServerClient } from '@supabase/ssr';
+import { createClient } from '@supabase/supabase-js';
 
-export async function GET() {
+export async function GET(req: NextRequest) {
   try {
-    const cookieStore = await cookies();
-    const accessToken = cookieStore.get('sb-access-token')?.value;
+    let response = NextResponse.next();
 
-    if (!accessToken) {
-      return NextResponse.json({ user: null });
-    }
+    const supabase = createServerClient(
+      process.env.NEXT_PUBLIC_SUPABASE_URL!,
+      process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
+      {
+        cookies: {
+          getAll() {
+            return req.cookies.getAll();
+          },
+          setAll(cookiesToSet) {
+            cookiesToSet.forEach(({ name, value }) => req.cookies.set(name, value));
+            response = NextResponse.next({ request: req });
+            cookiesToSet.forEach(({ name, value, options }) =>
+              response.cookies.set(name, value, options)
+            );
+          },
+        },
+      }
+    );
 
-    // Verify the token with Supabase
-    const { data: { user }, error } = await supabaseAdmin.auth.getUser(accessToken);
+    const { data: { user }, error } = await supabase.auth.getUser();
 
     if (error || !user) {
       return NextResponse.json({ user: null });
     }
 
-    // Check approval status from profiles table
+    // Check approval status using admin client
+    const supabaseAdmin = createClient(
+      process.env.NEXT_PUBLIC_SUPABASE_URL!,
+      process.env.SUPABASE_SERVICE_ROLE_KEY!,
+      { auth: { autoRefreshToken: false, persistSession: false } }
+    );
+
     let isApproved = false;
     let fullName = '';
     const { data: profile } = await supabaseAdmin
@@ -38,7 +57,7 @@ export async function GET() {
       fullName = user.user_metadata?.full_name || '';
     }
 
-    return NextResponse.json({
+    const jsonResponse = NextResponse.json({
       user: {
         id: user.id,
         email: user.email,
@@ -46,6 +65,13 @@ export async function GET() {
         isApproved,
       },
     });
+
+    // Copy any refreshed cookies
+    response.cookies.getAll().forEach((cookie) => {
+      jsonResponse.cookies.set(cookie.name, cookie.value);
+    });
+
+    return jsonResponse;
   } catch (error: any) {
     console.error('Session error:', error);
     return NextResponse.json({ user: null });

@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { supabaseAdmin } from '@/lib/supabase-admin';
+import { createServerClient } from '@supabase/ssr';
+import { createClient } from '@supabase/supabase-js';
 
 export async function POST(req: NextRequest) {
   try {
@@ -17,7 +18,13 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'Password must be at least 6 characters' }, { status: 400 });
     }
 
-    // Create user in Supabase Auth
+    // Use admin client to create user
+    const supabaseAdmin = createClient(
+      process.env.NEXT_PUBLIC_SUPABASE_URL!,
+      process.env.SUPABASE_SERVICE_ROLE_KEY!,
+      { auth: { autoRefreshToken: false, persistSession: false } }
+    );
+
     const { data: authData, error: authError } = await supabaseAdmin.auth.admin.createUser({
       email,
       password,
@@ -34,8 +41,7 @@ export async function POST(req: NextRequest) {
 
     const userId = authData.user.id;
 
-    // The trigger (handle_new_user) auto-creates a profile row.
-    // Update it with is_approved = false and full_name
+    // Update the auto-created profile
     const { error: profileError } = await supabaseAdmin
       .from('profiles')
       .update({
@@ -46,18 +52,14 @@ export async function POST(req: NextRequest) {
 
     if (profileError) {
       console.error('Profile update error:', profileError);
-      // If is_approved column doesn't exist yet, just update full_name
-      const { error: fallbackError } = await supabaseAdmin
+      // Fallback: just update full_name
+      await supabaseAdmin
         .from('profiles')
         .update({ full_name: fullName })
         .eq('id', userId);
-
-      if (fallbackError) {
-        console.error('Profile fallback update error:', fallbackError);
-      }
     }
 
-    // Auto-approve if the user's role is admin/manager (existing users)
+    // Check approval status
     let isApproved = false;
     const { data: profile } = await supabaseAdmin
       .from('profiles')
@@ -66,19 +68,44 @@ export async function POST(req: NextRequest) {
       .single();
 
     if (profile) {
-      if (profile.is_approved === true) {
-        isApproved = true;
-      } else if (profile.role === 'admin' || profile.role === 'manager') {
-        isApproved = true;
-        // Update is_approved
-        await supabaseAdmin
-          .from('profiles')
-          .update({ is_approved: true })
-          .eq('id', userId);
-      }
+      if (profile.is_approved === true) isApproved = true;
+      else if (profile.role === 'admin' || profile.role === 'manager') isApproved = true;
     }
 
-    return NextResponse.json({
+    // Now sign in the user to create a session with @supabase/ssr cookies
+    let response = NextResponse.next();
+
+    const supabase = createServerClient(
+      process.env.NEXT_PUBLIC_SUPABASE_URL!,
+      process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
+      {
+        cookies: {
+          getAll() {
+            return req.cookies.getAll();
+          },
+          setAll(cookiesToSet) {
+            cookiesToSet.forEach(({ name, value }) => req.cookies.set(name, value));
+            response = NextResponse.next({ request: req });
+            cookiesToSet.forEach(({ name, value, options }) =>
+              response.cookies.set(name, value, options)
+            );
+          },
+        },
+      }
+    );
+
+    // Sign in the newly created user to establish a session
+    const { error: signInError } = await supabase.auth.signInWithPassword({
+      email,
+      password,
+    });
+
+    if (signInError) {
+      console.error('Auto sign-in error after signup:', signInError.message);
+      // Return success anyway - user can log in manually
+    }
+
+    const jsonResponse = NextResponse.json({
       user: {
         id: userId,
         email,
@@ -86,6 +113,13 @@ export async function POST(req: NextRequest) {
         isApproved,
       },
     });
+
+    // Copy session cookies from Supabase
+    response.cookies.getAll().forEach((cookie) => {
+      jsonResponse.cookies.set(cookie.name, cookie.value);
+    });
+
+    return jsonResponse;
   } catch (error: any) {
     console.error('Signup error:', error);
     return NextResponse.json({ error: error.message || 'Signup failed' }, { status: 500 });

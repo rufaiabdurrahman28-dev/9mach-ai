@@ -177,7 +177,15 @@ export function ChatPage({ user, onLogout }: ChatPageProps) {
         signal: abortController.signal,
       });
 
-      if (!response.ok) throw new Error('Failed to get response');
+      // Handle error responses from the API
+      if (!response.ok) {
+        let errorMsg = 'Failed to get response from AI';
+        try {
+          const errData = await response.json();
+          errorMsg = errData.error || errorMsg;
+        } catch {}
+        throw new Error(errorMsg);
+      }
 
       const reader = response.body?.getReader();
       const decoder = new TextDecoder();
@@ -202,22 +210,39 @@ export function ChatPage({ user, onLogout }: ChatPageProps) {
         }
       }
 
+      // If we got no content at all, show an error
+      if (!accumulated.trim()) {
+        setMessages((prev) => {
+          const updated = [...prev];
+          const lastMsg = updated[updated.length - 1];
+          if (lastMsg && lastMsg.role === 'ai') {
+            updated[updated.length - 1] = {
+              ...lastMsg,
+              content: 'I received an empty response. Please try again.',
+            };
+          }
+          return updated;
+        });
+      }
+
       // Refresh preview after AI completes
       setTimeout(() => {
         refreshPreview();
-      }, 1000);
+      }, 1500);
 
       // Refresh messages from DB to get processed output
       fetchMessages();
     } catch (err: any) {
+      console.error('Chat error:', err);
       if (err.name !== 'AbortError') {
+        const errMsg = err.message || 'Unknown error';
         setMessages((prev) => {
           const updated = [...prev];
           const lastMsg = updated[updated.length - 1];
-          if (lastMsg && lastMsg.role === 'ai' && !lastMsg.content) {
+          if (lastMsg && lastMsg.role === 'ai') {
             updated[updated.length - 1] = {
               ...lastMsg,
-              content: 'Sorry, I encountered an error. Please try again.',
+              content: `Error: ${errMsg}. Please try again.`,
             };
           }
           return updated;

@@ -1,37 +1,66 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { supabaseAdmin } from '@/lib/supabase-admin';
-import { cookies } from 'next/headers';
+import { createServerClient } from '@supabase/ssr';
+import { createClient } from '@supabase/supabase-js';
 
-async function getAuthUser() {
-  const cookieStore = await cookies();
-  const accessToken = cookieStore.get('sb-access-token')?.value;
-  if (!accessToken) return null;
+function getSupabaseAdmin() {
+  return createClient(
+    process.env.NEXT_PUBLIC_SUPABASE_URL!,
+    process.env.SUPABASE_SERVICE_ROLE_KEY!,
+    { auth: { autoRefreshToken: false, persistSession: false } }
+  );
+}
 
-  const { data: { user }, error } = await supabaseAdmin.auth.getUser(accessToken);
-  if (error || !user) return null;
+async function getAuthUser(req: NextRequest) {
+  try {
+    let response = NextResponse.next();
 
-  let isApproved = false;
-  const { data: profile } = await supabaseAdmin
-    .from('profiles')
-    .select('role, is_approved')
-    .eq('id', user.id)
-    .single();
+    const supabase = createServerClient(
+      process.env.NEXT_PUBLIC_SUPABASE_URL!,
+      process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
+      {
+        cookies: {
+          getAll() {
+            return req.cookies.getAll();
+          },
+          setAll(cookiesToSet) {
+            cookiesToSet.forEach(({ name, value }) => req.cookies.set(name, value));
+            response = NextResponse.next({ request: req });
+            cookiesToSet.forEach(({ name, value, options }) =>
+              response.cookies.set(name, value, options)
+            );
+          },
+        },
+      }
+    );
 
-  if (profile) {
-    if (profile.is_approved === true) isApproved = true;
-    else if (profile.role === 'admin' || profile.role === 'manager') isApproved = true;
+    const { data: { user }, error } = await supabase.auth.getUser();
+    if (error || !user) return null;
+
+    let isApproved = false;
+    const { data: profile } = await getSupabaseAdmin()
+      .from('profiles')
+      .select('role, is_approved')
+      .eq('id', user.id)
+      .single();
+
+    if (profile) {
+      if (profile.is_approved === true) isApproved = true;
+      else if (profile.role === 'admin' || profile.role === 'manager') isApproved = true;
+    }
+
+    return { id: user.id, email: user.email, isApproved };
+  } catch {
+    return null;
   }
-
-  return { id: user.id, email: user.email, isApproved };
 }
 
 // GET - List workspaces for the current user
-export async function GET() {
+export async function GET(req: NextRequest) {
   try {
-    const user = await getAuthUser();
+    const user = await getAuthUser(req);
     if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
 
-    const { data: workspaces, error } = await supabaseAdmin
+    const { data: workspaces, error } = await getSupabaseAdmin()
       .from('workspaces')
       .select('*')
       .eq('user_id', user.id)
@@ -58,13 +87,13 @@ export async function GET() {
 // POST - Create a new workspace
 export async function POST(req: NextRequest) {
   try {
-    const user = await getAuthUser();
+    const user = await getAuthUser(req);
     if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
 
     const { name } = await req.json();
     if (!name) return NextResponse.json({ error: 'Name is required' }, { status: 400 });
 
-    const { data: workspace, error } = await supabaseAdmin
+    const { data: workspace, error } = await getSupabaseAdmin()
       .from('workspaces')
       .insert({
         user_id: user.id,

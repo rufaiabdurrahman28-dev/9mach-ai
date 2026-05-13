@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { supabaseAdmin } from '@/lib/supabase-admin';
+import { createServerClient } from '@supabase/ssr';
 
 export async function POST(req: NextRequest) {
   try {
@@ -9,8 +9,30 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'Email and password are required' }, { status: 400 });
     }
 
+    // Create a response object that we'll use to set cookies
+    let response = NextResponse.next();
+
+    const supabase = createServerClient(
+      process.env.NEXT_PUBLIC_SUPABASE_URL!,
+      process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
+      {
+        cookies: {
+          getAll() {
+            return req.cookies.getAll();
+          },
+          setAll(cookiesToSet) {
+            cookiesToSet.forEach(({ name, value }) => req.cookies.set(name, value));
+            response = NextResponse.next({ request: req });
+            cookiesToSet.forEach(({ name, value, options }) =>
+              response.cookies.set(name, value, options)
+            );
+          },
+        },
+      }
+    );
+
     // Sign in with Supabase Auth
-    const { data: authData, error: authError } = await supabaseAdmin.auth.signInWithPassword({
+    const { data: authData, error: authError } = await supabase.auth.signInWithPassword({
       email,
       password,
     });
@@ -22,6 +44,15 @@ export async function POST(req: NextRequest) {
     // Check approval status from profiles table
     let isApproved = false;
     let fullName = '';
+
+    // Use admin client to check profile (bypasses RLS)
+    const { createClient } = await import('@supabase/supabase-js');
+    const supabaseAdmin = createClient(
+      process.env.NEXT_PUBLIC_SUPABASE_URL!,
+      process.env.SUPABASE_SERVICE_ROLE_KEY!,
+      { auth: { autoRefreshToken: false, persistSession: false } }
+    );
+
     const { data: profile } = await supabaseAdmin
       .from('profiles')
       .select('role, is_approved, full_name')
@@ -39,8 +70,8 @@ export async function POST(req: NextRequest) {
       fullName = authData.user.user_metadata?.full_name || '';
     }
 
-    // Set session cookie
-    const response = NextResponse.json({
+    // Build the JSON response with user data
+    const jsonResponse = NextResponse.json({
       user: {
         id: authData.user.id,
         email: authData.user.email,
@@ -49,24 +80,12 @@ export async function POST(req: NextRequest) {
       },
     });
 
-    // Set the auth token as a cookie
-    response.cookies.set('sb-access-token', authData.session.access_token, {
-      httpOnly: true,
-      secure: process.env.NODE_ENV === 'production',
-      sameSite: 'lax',
-      maxAge: 60 * 60 * 24 * 7,
-      path: '/',
+    // Copy cookies from the Supabase session response
+    response.cookies.getAll().forEach((cookie) => {
+      jsonResponse.cookies.set(cookie.name, cookie.value);
     });
 
-    response.cookies.set('sb-refresh-token', authData.session.refresh_token, {
-      httpOnly: true,
-      secure: process.env.NODE_ENV === 'production',
-      sameSite: 'lax',
-      maxAge: 60 * 60 * 24 * 7,
-      path: '/',
-    });
-
-    return response;
+    return jsonResponse;
   } catch (error: any) {
     console.error('Login error:', error);
     return NextResponse.json({ error: error.message || 'Login failed' }, { status: 500 });
