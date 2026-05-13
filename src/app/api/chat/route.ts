@@ -266,7 +266,7 @@ export async function POST(req: NextRequest) {
     });
 
     // Fetch last 20 messages for context
-    const { data: history } = await supabaseAdmin
+    const { data: history } = await getSupabaseAdmin()
       .from('messages')
       .select('*')
       .eq('workspace_id', workspaceId)
