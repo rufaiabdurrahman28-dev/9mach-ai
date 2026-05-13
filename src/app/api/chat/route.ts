@@ -80,7 +80,7 @@ async function getAuthUser(req: NextRequest) {
 
     // Check approval status using admin client
     let isApproved = false;
-    const { data: profile } = await supabaseAdmin
+    const { data: profile } = await getSupabaseAdmin()
       .from('profiles')
       .select('role, is_approved')
       .eq('id', user.id)
@@ -250,7 +250,7 @@ export async function POST(req: NextRequest) {
     if (!workspaceId || !content) return NextResponse.json({ error: 'workspaceId and content are required' }, { status: 400 });
 
     // Verify workspace belongs to user
-    const { data: workspace } = await supabaseAdmin
+    const { data: workspace } = await getSupabaseAdmin()
       .from('workspaces')
       .select('id')
       .eq('id', workspaceId)

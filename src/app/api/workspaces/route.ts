@@ -36,6 +36,7 @@ async function getAuthUser(req: NextRequest) {
     const { data: { user }, error } = await supabase.auth.getUser();
     if (error || !user) return null;
 
+    // Check approval status using admin client
     let isApproved = false;
     const { data: profile } = await getSupabaseAdmin()
       .from('profiles')
@@ -49,16 +50,22 @@ async function getAuthUser(req: NextRequest) {
     }
 
     return { id: user.id, email: user.email, isApproved };
-  } catch {
+  } catch (error) {
+    console.error('Auth error:', error);
     return null;
   }
 }
 
-// GET - List workspaces for the current user
+// GET /api/workspaces - List workspaces for the authenticated user
 export async function GET(req: NextRequest) {
   try {
     const user = await getAuthUser(req);
-    if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    if (!user) {
+      return NextResponse.json({ error: 'Unauthorized - please log in again' }, { status: 401 });
+    }
+    if (!user.isApproved) {
+      return NextResponse.json({ error: 'Not approved yet - please wait for admin approval' }, { status: 403 });
+    }
 
     const { data: workspaces, error } = await getSupabaseAdmin()
       .from('workspaces')
@@ -71,6 +78,7 @@ export async function GET(req: NextRequest) {
       return NextResponse.json({ workspaces: [] });
     }
 
+    // Map to camelCase for the frontend
     const mapped = (workspaces || []).map((w: any) => ({
       id: w.id,
       name: w.name,
@@ -84,20 +92,25 @@ export async function GET(req: NextRequest) {
   }
 }
 
-// POST - Create a new workspace
+// POST /api/workspaces - Create a new workspace
 export async function POST(req: NextRequest) {
   try {
     const user = await getAuthUser(req);
-    if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    if (!user) {
+      return NextResponse.json({ error: 'Unauthorized - please log in again' }, { status: 401 });
+    }
+    if (!user.isApproved) {
+      return NextResponse.json({ error: 'Not approved yet - please wait for admin approval' }, { status: 403 });
+    }
 
     const { name } = await req.json();
-    if (!name) return NextResponse.json({ error: 'Name is required' }, { status: 400 });
+    const workspaceName = name || 'Untitled Workspace';
 
     const { data: workspace, error } = await getSupabaseAdmin()
       .from('workspaces')
       .insert({
         user_id: user.id,
-        name,
+        name: workspaceName,
       })
       .select()
       .single();
@@ -107,13 +120,14 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'Failed to create workspace' }, { status: 500 });
     }
 
-    return NextResponse.json({
-      workspace: {
-        id: workspace.id,
-        name: workspace.name,
-        createdAt: workspace.created_at,
-      },
-    });
+    // Map to camelCase for the frontend
+    const mapped = {
+      id: workspace.id,
+      name: workspace.name,
+      createdAt: workspace.created_at,
+    };
+
+    return NextResponse.json({ workspace: mapped });
   } catch (error: any) {
     console.error('Create workspace error:', error);
     return NextResponse.json({ error: 'Failed to create workspace' }, { status: 500 });
